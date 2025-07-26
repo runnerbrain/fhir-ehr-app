@@ -122,7 +122,8 @@ export default function Home() {
         response_type: 'code',
         client_id: clientId,
         redirect_uri: redirectUri,
-        scope: 'openid profile user/Patient.read user/Observation.read fhirUser',
+        scope: 'openid fhirUser launch user/Patient.read user/Observation.read user/Observation.write', // practitioner scopes
+        launch: launch, // include launch parameter for EHR launch
         state: state,
         aud: issuerUrl,
         code_challenge: codeChallenge,
@@ -191,8 +192,16 @@ export default function Home() {
       }
       const tokenData = await tokenResponse.json();
       console.log("Token exchange success:", tokenData);
-      // Do NOT fetch patient data, just set success step
-      setStep("success");
+      console.log('Full token response:', JSON.stringify(tokenData, null, 2));
+      // If patient context is present, fetch that specific patient
+      if (tokenData.patient) {
+        console.log('Patient ID found:', tokenData.patient);
+        fetchPatientData(tokenData.access_token, tokenData.patient);
+      } else {
+        console.log('No patient ID in token. Available properties:', Object.keys(tokenData));
+        setError("No patient context found in token. This app must be launched with a patient context.");
+        setStep("error");
+      }
     } catch (error) {
       console.log("Error in handleOAuthCallback:", error);
       setError(`Token exchange failed: ${error.message}`);
@@ -221,6 +230,10 @@ export default function Home() {
         throw new Error(`Failed to fetch patient: ${response.status}`);
       }
       const patient = await response.json();
+      console.log("Patient data:", patient);
+      console.log('Full patient resource:', JSON.stringify(patient, null, 2));
+      console.log('Patient names:', patient.name);
+      console.log('Patient birth date:', patient.birthDate);
       setPatientData(patient);
       setStep("success");
     } catch (error) {
@@ -281,12 +294,20 @@ export default function Home() {
   }
 
   // Success state: show patient demographics or login success
-  if (step === "success" && !patientData) {
+  if (step === "success" && patientData) {
     return (
       <div className={styles.container}>
-        <h1>Login Successful!</h1>
-        <p>You have authenticated with Cerner SMART on FHIR.</p>
-        <button onClick={resetSession} style={{ marginTop: '20px' }}>Start Over</button>
+        <h1>Patient Information</h1>
+        <div className={styles.patientInfo}>
+          <h2>Demographics</h2>
+          <div className={styles.info}>
+            <div><strong>Name:</strong> {patientData.name?.[0]?.given?.join(' ')} {patientData.name?.[0]?.family}</div>
+            <div><strong>ID:</strong> {patientData.id}</div>
+            <div><strong>Gender:</strong> {patientData.gender}</div>
+            <div><strong>Birth Date:</strong> {patientData.birthDate}</div>
+          </div>
+          <button onClick={resetSession} style={{ marginTop: '20px' }}>Start Over</button>
+        </div>
       </div>
     );
   }
