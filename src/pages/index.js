@@ -193,6 +193,8 @@ export default function Home() {
       const tokenData = await tokenResponse.json();
       console.log("Token exchange success:", tokenData);
       console.log('Full token response:', JSON.stringify(tokenData, null, 2));
+      // Store access token for later use
+      sessionStorage.setItem('access_token', tokenData.access_token);
       // If patient context is present, fetch that specific patient
       if (tokenData.patient) {
         console.log('Patient ID found:', tokenData.patient);
@@ -235,6 +237,9 @@ export default function Home() {
       console.log('Patient names:', patient.name);
       console.log('Patient birth date:', patient.birthDate);
       setPatientData(patient);
+      // Store patient data for vitals page
+      sessionStorage.setItem('patient_data', JSON.stringify(patient));
+      sessionStorage.setItem('patient_id', patient.id);
       setStep("success");
     } catch (error) {
       setError(`Patient fetch failed: ${error.message}`);
@@ -306,6 +311,14 @@ export default function Home() {
             <div><strong>Gender:</strong> {patientData.gender}</div>
             <div><strong>Birth Date:</strong> {patientData.birthDate}</div>
           </div>
+          
+          <button 
+            onClick={() => router.push('/vitals')}
+            style={{ marginTop: '20px', marginRight: '10px', background: '#2196f3', color: 'white', border: 'none', padding: '10px 20px', borderRadius: '4px', cursor: 'pointer' }}
+          >
+            View Vitals
+          </button>
+          
           <button onClick={resetSession} style={{ marginTop: '20px' }}>Start Over</button>
         </div>
       </div>
