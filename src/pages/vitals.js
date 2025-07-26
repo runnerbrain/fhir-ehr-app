@@ -169,7 +169,15 @@ export default function Vitals() {
   };
 
   const goBack = () => {
-    router.push('/');
+    // Check if we have patient data in sessionStorage
+    const patientData = sessionStorage.getItem('patient_data');
+    if (patientData) {
+      // We have patient data, so we can safely go back to demographics
+      router.push('/');
+    } else {
+      // No patient data, redirect to root and let it handle the error
+      router.push('/');
+    }
   };
 
   if (loading) {

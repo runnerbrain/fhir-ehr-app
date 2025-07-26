@@ -32,13 +32,11 @@ export default function Home() {
     const params = new URLSearchParams(window.location.search);
     const code = params.get("code");
     const state = params.get("state");
-    const currentIssuer = params.get("iss");
-    const currentLaunch = params.get("launch");
 
     // Debug: Log all URL params and sessionStorage
     console.log("--- useEffect RUN ---");
     console.log("URL:", window.location.href);
-    console.log("URL params:", { code, state, currentIssuer, currentLaunch });
+    console.log("URL params:", { code, state });
     console.log("sessionStorage:", {
       code_verifier: sessionStorage.getItem('code_verifier'),
       iss: sessionStorage.getItem('iss'),
@@ -52,10 +50,13 @@ export default function Home() {
     if (code && state) {
       console.log("Detected OAuth callback (code & state in URL)");
       handleOAuthCallback(code, state);
-      return; // <--- This prevents the rest of the logic from running
+      return;
     }
 
     // Step 2: Check if this is a SMART launch (from EHR)
+    const currentIssuer = params.get("iss");
+    const currentLaunch = params.get("launch");
+
     if (currentIssuer && currentLaunch) {
       console.log("Detected SMART launch (iss & launch in URL)");
       setIssuer(currentIssuer);
@@ -63,9 +64,21 @@ export default function Home() {
       setStep("launch");
       discoverEndpoints(currentIssuer, currentLaunch);
     } else {
-      console.log("Missing required parameters. Triggering error state.");
-      setError("Missing required parameters. Please launch from EHR.");
-      setStep("error");
+      // Check if we have existing patient data (user navigating back from vitals page)
+      const storedPatientData = sessionStorage.getItem('patient_data');
+      const storedIssuer = sessionStorage.getItem('iss');
+      
+      if (storedPatientData && storedIssuer) {
+        console.log("User navigating back with existing patient data");
+        const patient = JSON.parse(storedPatientData);
+        setPatientData(patient);
+        setIssuer(storedIssuer);
+        setStep("success");
+      } else {
+        console.log("Missing required parameters. Triggering error state.");
+        setError("Missing required parameters. Please launch from EHR.");
+        setStep("error");
+      }
     }
   }, [router.isReady]);
 
