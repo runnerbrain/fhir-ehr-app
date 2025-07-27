@@ -135,7 +135,7 @@ export default function Home() {
         response_type: 'code',
         client_id: clientId,
         redirect_uri: redirectUri,
-        scope: 'openid fhirUser launch user/Patient.read user/Observation.read user/Observation.write', // practitioner scopes
+        scope: 'openid fhirUser launch offline_access user/Patient.read user/Observation.read user/Observation.write', // practitioner scopes with offline access
         launch: launch, // include launch parameter for EHR launch
         state: state,
         aud: issuerUrl,
@@ -206,8 +206,12 @@ export default function Home() {
       const tokenData = await tokenResponse.json();
       console.log("Token exchange success:", tokenData);
       console.log('Full token response:', JSON.stringify(tokenData, null, 2));
-      // Store access token for later use
+      // Store access token and refresh token for later use
       sessionStorage.setItem('access_token', tokenData.access_token);
+      if (tokenData.refresh_token) {
+        sessionStorage.setItem('refresh_token', tokenData.refresh_token);
+        console.log('Refresh token stored for offline access');
+      }
       // If patient context is present, fetch that specific patient
       if (tokenData.patient) {
         console.log('Patient ID found:', tokenData.patient);

@@ -11,6 +11,15 @@ export default function Vitals() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [patientData, setPatientData] = useState(null);
+  const [showAddForm, setShowAddForm] = useState(false);
+  const [newVital, setNewVital] = useState({
+    category: '',
+    value: '',
+    unit: '',
+    date: new Date().toLocaleString('sv-SE').slice(0, 16) // Default to current local date/time
+  });
+  const [submitting, setSubmitting] = useState(false);
+  const [showDebugButtons, setShowDebugButtons] = useState(false); // Toggle for debug buttons
 
   const VITALS_PER_PAGE = 5;
 
@@ -34,6 +43,21 @@ export default function Vitals() {
     // Fetch all vitals
     fetchAllVitals(accessToken, patientId, issuer);
   }, []);
+
+  // Helper function to log vital structure for debugging
+  const logVitalStructure = (observation) => {
+    console.log("=== VITAL STRUCTURE DEBUG ===");
+    console.log("Full observation:", JSON.stringify(observation, null, 2));
+    console.log("Has valueQuantity:", !!observation.valueQuantity);
+    console.log("Has component:", !!observation.component);
+    console.log("Component length:", observation.component?.length || 0);
+    if (observation.component) {
+      observation.component.forEach((comp, index) => {
+        console.log(`Component ${index}:`, JSON.stringify(comp, null, 2));
+      });
+    }
+    console.log("=== END DEBUG ===");
+  };
 
   const fetchAllVitals = async (accessToken, patientId, issuer) => {
     try {
@@ -180,6 +204,239 @@ export default function Vitals() {
     }
   };
 
+  // Helper function to refresh access token
+  const refreshAccessToken = async () => {
+    try {
+      const refreshToken = sessionStorage.getItem('refresh_token');
+      const tokenEndpoint = sessionStorage.getItem('token_endpoint');
+      
+      if (!refreshToken || !tokenEndpoint) {
+        throw new Error("No refresh token available");
+      }
+
+      const response = await fetch(tokenEndpoint, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded',
+        },
+        body: new URLSearchParams({
+          grant_type: 'refresh_token',
+          refresh_token: refreshToken,
+          client_id: process.env.NEXT_PUBLIC_CERNER_CLIENT_ID,
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error(`Token refresh failed: ${response.status}`);
+      }
+
+      const tokenData = await response.json();
+      sessionStorage.setItem('access_token', tokenData.access_token);
+      
+      if (tokenData.refresh_token) {
+        sessionStorage.setItem('refresh_token', tokenData.refresh_token);
+      }
+
+      console.log('Access token refreshed successfully');
+      return tokenData.access_token;
+    } catch (error) {
+      console.error('Token refresh failed:', error);
+      throw error;
+    }
+  };
+
+  const createNewVital = async () => {
+    try {
+      setSubmitting(true);
+      const accessToken = sessionStorage.getItem('access_token');
+      const patientId = sessionStorage.getItem('patient_id');
+      const issuer = sessionStorage.getItem('issuer');
+
+      if (!accessToken || !patientId || !issuer) {
+        throw new Error("Missing authentication data");
+      }
+
+      // Create FHIR Observation resource - minimal structure based on Oracle docs
+      const observation = {
+        resourceType: "Observation",
+        status: "final",
+        category: [
+          {
+            coding: [
+              {
+                system: "http://terminology.hl7.org/CodeSystem/observation-category",
+                code: "vital-signs",
+                display: "Vital Signs"
+              }
+            ],
+            text: "Vital Signs"
+          }
+        ],
+        code: {
+          coding: [
+            {
+              system: "http://loinc.org",
+              code: getLoincCode(newVital.category)
+            }
+          ],
+          text: newVital.category
+        },
+        subject: {
+          reference: `Patient/${patientId}`
+        },
+        effectiveDateTime: new Date(newVital.date).toISOString()
+      };
+
+      // Add valueQuantity for simple vitals (like Temperature example in Oracle docs)
+      observation.valueQuantity = {
+        value: parseFloat(newVital.value),
+        unit: newVital.unit,
+        system: "http://unitsofmeasure.org",
+        code: getUcumCode(newVital.unit)
+      };
+
+      console.log("Creating new observation:", observation);
+      console.log("JSON payload:", JSON.stringify(observation, null, 2));
+
+      const response = await fetch(`${issuer}/Observation`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${accessToken}`,
+          'Content-Type': 'application/fhir+json',
+          'Accept': 'application/fhir+json'
+        },
+        body: JSON.stringify(observation)
+      });
+
+      console.log("Response status:", response.status);
+      console.log("Response headers:", Object.fromEntries(response.headers.entries()));
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        console.log("Error response body:", errorText);
+        
+        // If token expired, try to refresh it and retry
+        if (response.status === 401) {
+          try {
+            console.log("Token expired, attempting to refresh...");
+            const newAccessToken = await refreshAccessToken();
+            
+            // Retry the request with the new token
+            const retryResponse = await fetch(`${issuer}/Observation`, {
+              method: 'POST',
+              headers: {
+                'Authorization': `Bearer ${newAccessToken}`,
+                'Content-Type': 'application/fhir+json',
+                'Accept': 'application/fhir+json'
+              },
+              body: JSON.stringify(observation)
+            });
+            
+            if (!retryResponse.ok) {
+              const retryErrorText = await retryResponse.text();
+              throw new Error(`Failed to create vital after token refresh: ${retryResponse.status} ${retryErrorText}`);
+            }
+            
+            // Continue with the retry response
+            const responseText = await retryResponse.text();
+            console.log("Retry response status:", retryResponse.status);
+            console.log("Retry response body:", responseText);
+            
+            let createdObservation = null;
+            if (responseText.trim()) {
+              createdObservation = JSON.parse(responseText);
+              console.log("Created observation:", createdObservation);
+            } else {
+              console.log("Empty response body - this is normal for successful POST operations");
+            }
+            
+            // Reset form and refresh vitals
+            setNewVital({
+              category: '',
+              value: '',
+              unit: '',
+              date: new Date().toLocaleString('sv-SE').slice(0, 16)
+            });
+            setShowAddForm(false);
+            setSubmitting(false);
+            
+            // Refresh vitals data
+            await fetchAllVitals(newAccessToken, patientId, issuer);
+            return;
+            
+          } catch (refreshError) {
+            throw new Error(`Token refresh failed: ${refreshError.message}`);
+          }
+        }
+        
+        throw new Error(`Failed to create vital: ${response.status} ${errorText}`);
+      }
+
+      // Check if response has content before parsing JSON
+      const responseText = await response.text();
+      console.log("Response status:", response.status);
+      console.log("Response body:", responseText);
+      
+      let createdObservation = null;
+      if (responseText.trim()) {
+        // Only parse JSON if there's actual content
+        createdObservation = JSON.parse(responseText);
+        console.log("Created observation:", createdObservation);
+      } else {
+        console.log("Empty response body - this is normal for successful POST operations");
+      }
+
+      // Reset form and refresh vitals
+      setNewVital({
+        category: '',
+        value: '',
+        unit: '',
+        date: new Date().toLocaleString('sv-SE').slice(0, 16) // Reset to current local date/time
+      });
+      setShowAddForm(false);
+      setSubmitting(false);
+
+      // Refresh vitals data
+      await fetchAllVitals(accessToken, patientId, issuer);
+
+    } catch (error) {
+      console.error("Error creating vital:", error);
+      setError(`Failed to create vital: ${error.message}`);
+      setSubmitting(false);
+    }
+  };
+
+  // Helper function to get LOINC codes for common vital signs
+  const getLoincCode = (category) => {
+    const loincCodes = {
+      'Blood Pressure': '8480-6', // Blood pressure panel with all children optional
+      'Temperature': '8331-1',     // Oral temperature (from Oracle docs)
+      'Heart Rate': '8867-4',      // Heart rate (alternative from debug output)
+      'Respiratory Rate': '9279-1', // Respiratory rate
+      'Oxygen Saturation': '703498', // SpO2 (from Oracle docs)
+      'Weight': '29463-7',         // Weight Measured
+      'Height': '8302-2',          // Body height
+      'Body Mass Index': '39156-5' // BMI Measured
+    };
+    return loincCodes[category] || 'unknown';
+  };
+
+  // Helper function to get UCUM codes for units
+  const getUcumCode = (unit) => {
+    const ucumCodes = {
+      'mmHg': 'mm[Hg]',
+      'bpm': '/min',
+      '°C': 'Cel',
+      '°F': '[degF]',
+      'kg': 'kg',
+      'lbs': '[lb_av]',
+      'cm': 'cm',
+      'in': '[in_i]',
+      '%': '%'
+    };
+    return ucumCodes[unit] || unit;
+  };
+
   if (loading) {
     return (
       <div className={styles.container}>
@@ -220,26 +477,166 @@ export default function Vitals() {
         </div>
       ) : (
         <>
-          {/* Category Buttons */}
-          <div className={styles.patientInfo}>
-            <h2>Vital Categories</h2>
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '10px', marginBottom: '20px' }}>
-              {categories.map((category, index) => (
+          {/* Add New Vital Button */}
+          <div className={styles.patientInfo} style={{ marginBottom: '20px' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <h2>Vital Categories</h2>
+              <div style={{ display: 'flex', gap: '10px' }}>
                 <button
-                  key={index}
-                  onClick={() => selectCategory(category)}
+                  onClick={() => setShowDebugButtons(!showDebugButtons)}
                   style={{
-                    background: selectedCategory?.name === category.name ? '#2196f3' : '#f0f0f0',
-                    color: selectedCategory?.name === category.name ? 'white' : 'black',
+                    background: showDebugButtons ? '#ff9800' : '#ccc',
+                    color: 'white',
+                    border: 'none',
+                    padding: '8px 12px',
+                    borderRadius: '4px',
+                    cursor: 'pointer',
+                    fontSize: '12px'
+                  }}
+                  title="Toggle debug mode"
+                >
+                  {showDebugButtons ? '🔍 Debug ON' : '🔍 Debug OFF'}
+                </button>
+                <button
+                  onClick={() => setShowAddForm(!showAddForm)}
+                  style={{
+                    background: '#4CAF50',
+                    color: 'white',
                     border: 'none',
                     padding: '10px 20px',
                     borderRadius: '4px',
-                    cursor: 'pointer',
-                    fontSize: '14px'
+                    cursor: 'pointer'
                   }}
                 >
-                  {category.name} ({category.count})
+                  {showAddForm ? 'Cancel' : 'Add New Vital'}
                 </button>
+              </div>
+            </div>
+            
+            {/* Add New Vital Form */}
+            {showAddForm && (
+              <div style={{ marginTop: '20px', padding: '20px', border: '1px solid #ddd', borderRadius: '4px', backgroundColor: '#f9f9f9' }}>
+                <h3>Add New Vital Sign</h3>
+                <div style={{ display: 'grid', gap: '15px', marginTop: '15px' }}>
+                  <div>
+                    <label style={{ display: 'block', marginBottom: '5px', fontWeight: 'bold' }}>Category:</label>
+                    <select
+                      value={newVital.category}
+                      onChange={(e) => setNewVital({...newVital, category: e.target.value})}
+                      style={{ width: '100%', padding: '8px', border: '1px solid #ddd', borderRadius: '4px' }}
+                    >
+                      <option value="">Select a category</option>
+                      <option value="Blood Pressure">Blood Pressure</option>
+                      <option value="Temperature">Temperature</option>
+                      <option value="Heart Rate">Heart Rate</option>
+                      <option value="Respiratory Rate">Respiratory Rate</option>
+                      <option value="Oxygen Saturation">Oxygen Saturation</option>
+                      <option value="Weight">Weight</option>
+                      <option value="Height">Height</option>
+                    </select>
+                  </div>
+                  
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
+                    <div>
+                      <label style={{ display: 'block', marginBottom: '5px', fontWeight: 'bold' }}>Value:</label>
+                      <input
+                        type="number"
+                        step="0.1"
+                        value={newVital.value}
+                        onChange={(e) => setNewVital({...newVital, value: e.target.value})}
+                        placeholder="Enter value"
+                        style={{ width: '100%', padding: '8px', border: '1px solid #ddd', borderRadius: '4px' }}
+                      />
+                    </div>
+                    <div>
+                      <label style={{ display: 'block', marginBottom: '5px', fontWeight: 'bold' }}>Unit:</label>
+                      <select
+                        value={newVital.unit}
+                        onChange={(e) => setNewVital({...newVital, unit: e.target.value})}
+                        style={{ width: '100%', padding: '8px', border: '1px solid #ddd', borderRadius: '4px' }}
+                      >
+                        <option value="">Select unit</option>
+                        <option value="mmHg">mmHg</option>
+                        <option value="bpm">bpm</option>
+                        <option value="°C">°C</option>
+                        <option value="°F">°F</option>
+                        <option value="kg">kg</option>
+                        <option value="lbs">lbs</option>
+                        <option value="cm">cm</option>
+                        <option value="in">in</option>
+                        <option value="%">%</option>
+                      </select>
+                    </div>
+                  </div>
+                  
+                  <div>
+                    <label style={{ display: 'block', marginBottom: '5px', fontWeight: 'bold' }}>Date/Time:</label>
+                    <input
+                      type="datetime-local"
+                      value={newVital.date}
+                      onChange={(e) => setNewVital({...newVital, date: e.target.value})}
+                      style={{ width: '100%', padding: '8px', border: '1px solid #ddd', borderRadius: '4px' }}
+                    />
+                  </div>
+                  
+                  <button
+                    onClick={createNewVital}
+                    disabled={submitting || !newVital.category || !newVital.value || !newVital.unit}
+                    style={{
+                      background: submitting ? '#ccc' : '#2196f3',
+                      color: 'white',
+                      border: 'none',
+                      padding: '10px 20px',
+                      borderRadius: '4px',
+                      cursor: submitting ? 'not-allowed' : 'pointer',
+                      width: '100%'
+                    }}
+                  >
+                    {submitting ? 'Creating...' : 'Create Vital Sign'}
+                  </button>
+                </div>
+              </div>
+            )}
+            
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '10px', marginBottom: '20px', marginTop: '20px' }}>
+              {categories.map((category, index) => (
+                <div key={index} style={{ display: 'flex', gap: '5px' }}>
+                  <button
+                    onClick={() => selectCategory(category)}
+                    style={{
+                      background: selectedCategory?.name === category.name ? '#2196f3' : '#f0f0f0',
+                      color: selectedCategory?.name === category.name ? 'white' : 'black',
+                      border: 'none',
+                      padding: '10px 20px',
+                      borderRadius: '4px',
+                      cursor: 'pointer',
+                      fontSize: '14px'
+                    }}
+                  >
+                    {category.name} ({category.count})
+                  </button>
+                  {showDebugButtons && (
+                    <button
+                      onClick={() => {
+                        if (category.vitals && category.vitals.length > 0) {
+                          logVitalStructure(category.vitals[0]);
+                        }
+                      }}
+                      style={{
+                        background: '#ff9800',
+                        color: 'white',
+                        border: 'none',
+                        padding: '10px',
+                        borderRadius: '4px',
+                        cursor: 'pointer',
+                        fontSize: '12px'
+                      }}
+                      title="Debug structure"
+                    >
+                      🔍
+                    </button>
+                  )}
+                </div>
               ))}
             </div>
           </div>
